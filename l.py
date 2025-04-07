@@ -38,6 +38,7 @@ def mutate(schedule):
 POPULATION_SIZE = 250
 GENERATIONS = 250
 
+
 def vt(schedule):
     time_schedule = defaultdict(lambda: defaultdict(list))
     time_slots = sorted({lesson[1] for lesson in schedule})
@@ -73,7 +74,7 @@ def vt(schedule):
 groups = ["G1","G2", "G3", "G4","G5"]
 subjects = ["S1", "S2", "S3", "S4", "S5"]
 teachers = ["T1","T2","T3", "T4"]
-lessons = ["L1","L2","L3","L4","L5", "L6"]
+lessons = ["L1","L2","L3","L4","L5"]
 
 d_subj={
 ("G1", "S1"):3,
@@ -120,7 +121,6 @@ def selection(ranked_population):
 
 
 def calcfit(chromosome):
-    
     if len(chromosome) != sum([count for gr_less, count in d_subj.items()]):
         return -1000000 
   
@@ -158,8 +158,6 @@ def calcfit(chromosome):
     return (1000000 - hard_constraints*10000)
 
 
-from collections import defaultdict
-
 
 def g_alg():
     
@@ -195,3 +193,4 @@ def g_alg():
     return max(population, key=calcfit)
 
 vt(g_alg())
+
