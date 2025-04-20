@@ -1,11 +1,12 @@
 import random
 from collections import defaultdict
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Set
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QPushButton, QVBoxLayout, QWidget, QMessageBox, QFileDialog
 )
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 import xlwt
 import sys
 
@@ -73,7 +74,15 @@ lecture_groups = {
 }
 
 
-def generate_random_schedule() -> Schedule:
+def is_cell_blocked(day: str, time_num: int, group: str, blocked_slots: Set[Tuple[str, int, str]]) -> bool:
+    """Проверяет, заблокирована ли ячейка"""
+    return (day, time_num, group) in blocked_slots
+
+
+def generate_random_schedule(blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+    if blocked_slots is None:
+        blocked_slots = set()
+
     schedule = []
 
     # Обычные занятия
@@ -83,9 +92,22 @@ def generate_random_schedule() -> Schedule:
             continue
 
         for _ in range(count):
+            # Генерируем только незаблокированные слоты
+            available_slots = [
+                slot for slot in LESSON_SLOTS
+                if not is_cell_blocked(
+                    slot.split('-')[0],
+                    int(slot.split('-')[1]),
+                    group,
+                    blocked_slots
+                )
+            ]
+            if not available_slots:
+                continue  # Пропускаем если нет доступных слотов
+
             gene = [
                 random.choice(available_teachers),
-                random.choice(LESSON_SLOTS),
+                random.choice(available_slots),
                 group,
                 subject
             ]
@@ -98,7 +120,24 @@ def generate_random_schedule() -> Schedule:
         if not available_teachers:
             continue
 
-        slot = random.choice(LESSON_SLOTS)
+        # Находим слот, который не заблокирован ни для одной из групп
+        available_lecture_slots = [
+            slot for slot in LESSON_SLOTS
+            if all(
+                not is_cell_blocked(
+                    slot.split('-')[0],
+                    int(slot.split('-')[1]),
+                    group,
+                    blocked_slots
+                )
+                for group in groups_list
+            )
+        ]
+
+        if not available_lecture_slots:
+            continue
+
+        slot = random.choice(available_lecture_slots)
         teacher = random.choice(available_teachers)
 
         for group in groups_list:
@@ -113,7 +152,10 @@ def generate_random_schedule() -> Schedule:
     return schedule
 
 
-def calculate_fitness(schedule: Schedule) -> int:
+def calculate_fitness(schedule: Schedule, blocked_slots: Set[Tuple[str, int, str]] = None) -> int:
+    if blocked_slots is None:
+        blocked_slots = set()
+
     if len(schedule) < sum(group_subject_requirements.values()):
         return -1_000_000
 
@@ -127,6 +169,10 @@ def calculate_fitness(schedule: Schedule) -> int:
     for teacher, lesson_slot, group, subject in schedule:
         day, slot_num = lesson_slot.split('-')
         slot_num = int(slot_num)
+
+        # Проверка на использование заблокированной ячейки
+        if is_cell_blocked(day, slot_num, group, blocked_slots):
+            hard_constraints_violations += 10  # Большой штраф за использование заблокированной ячейки
 
         # Проверка преподавателя
         if subject.replace("лекция_", "") not in teacher_subjects.get(teacher, []):
@@ -212,7 +258,10 @@ def crossover(parent1: Schedule, parent2: Schedule) -> Schedule:
     return child
 
 
-def mutate(schedule: Schedule) -> Schedule:
+def mutate(schedule: Schedule, blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+    if blocked_slots is None:
+        blocked_slots = set()
+
     if not schedule:
         return schedule
 
@@ -243,11 +292,28 @@ def mutate(schedule: Schedule) -> Schedule:
         available_slots = [ls for ls in LESSON_SLOTS
                            if ls.split('-')[0] == current_day and
                            not any(g[2] == group and g[1] == ls
-                                   for g in schedule if g != schedule[idx])]
+                                   for g in schedule if g != schedule[idx]) and
+                           not is_cell_blocked(
+                               ls.split('-')[0],
+                               int(ls.split('-')[1]),
+                               group,
+                               blocked_slots
+                           )]
         if available_slots:
             schedule[idx][1] = random.choice(available_slots)
         else:
-            schedule[idx][1] = random.choice(LESSON_SLOTS)
+            # Если нет доступных слотов в этот день, ищем в любой день
+            available_slots = [ls for ls in LESSON_SLOTS
+                               if not any(g[2] == group and g[1] == ls
+                                          for g in schedule if g != schedule[idx]) and
+                               not is_cell_blocked(
+                                   ls.split('-')[0],
+                                   int(ls.split('-')[1]),
+                                   group,
+                                   blocked_slots
+                               )]
+            if available_slots:
+                schedule[idx][1] = random.choice(available_slots)
 
     return schedule
 
@@ -266,11 +332,14 @@ def select_parent(ranked_population: List[Tuple[int, Schedule]]) -> Schedule:
     return ranked_population[0][1]
 
 
-def genetic_algorithm() -> Schedule:
-    population = [generate_random_schedule() for _ in range(POPULATION_SIZE)]
+def genetic_algorithm(blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+    if blocked_slots is None:
+        blocked_slots = set()
+
+    population = [generate_random_schedule(blocked_slots) for _ in range(POPULATION_SIZE)]
 
     for generation in range(GENERATIONS):
-        ranked = sorted([(calculate_fitness(ind), ind)
+        ranked = sorted([(calculate_fitness(ind, blocked_slots), ind)
                          for ind in population], key=lambda x: x[0], reverse=True)
 
         elite = ranked[:int(POPULATION_SIZE * ELITISM_RATE)]
@@ -291,13 +360,13 @@ def genetic_algorithm() -> Schedule:
             child = crossover(parent1, parent2)
 
             if random.random() < 0.1:
-                child = mutate(child)
+                child = mutate(child, blocked_slots)
 
             new_generation.append(child)
 
         population = new_generation
 
-    return max(population, key=calculate_fitness)
+    return max(population, key=lambda x: calculate_fitness(x, blocked_slots))
 
 
 class ScheduleApp(QMainWindow):
@@ -306,12 +375,36 @@ class ScheduleApp(QMainWindow):
         self.setWindowTitle("Генератор расписания университета")
         self.setGeometry(100, 100, 1200, 800)
         self.current_schedule = []
+        self.blocked_cells = set()  # Множество для хранения заблокированных ячеек
         self.init_ui()
 
     def init_ui(self):
         self.table = QTableWidget()
         self.table.setColumnCount(len(groups) + 2)  # +2 для дня и времени
         self.table.setHorizontalHeaderLabels(["День", "Время"] + groups)
+
+        # Заполняем таблицу пустыми ячейками
+        total_rows = len(DAYS) * len(TIME_SLOTS)
+        self.table.setRowCount(total_rows)
+
+        # Заполняем столбцы дней и времени
+        row = 0
+        for day in DAYS:
+            day_item = QTableWidgetItem(day)
+            self.table.setItem(row, 0, day_item)
+            self.table.setSpan(row, 0, len(TIME_SLOTS), 1)  # Объединяем ячейки дня
+
+            for time_num, time_text in TIME_SLOTS.items():
+                time_item = QTableWidgetItem(time_text)
+                self.table.setItem(row, 1, time_item)
+
+                # Заполняем пустые ячейки для групп
+                for col in range(2, self.table.columnCount()):
+                    item = QTableWidgetItem("")
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.table.setItem(row, col, item)
+
+                row += 1
 
         btn_layout = QVBoxLayout()
         self.generate_btn = QPushButton("Сгенерировать расписание")
@@ -322,6 +415,10 @@ class ScheduleApp(QMainWindow):
         self.save_btn.clicked.connect(self.save_to_excel)
         btn_layout.addWidget(self.save_btn)
 
+        self.clear_blocks_btn = QPushButton("Очистить блокировки")
+        self.clear_blocks_btn.clicked.connect(self.clear_blocked_cells)
+        btn_layout.addWidget(self.clear_blocks_btn)
+
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.table)
         main_layout.addLayout(btn_layout)
@@ -330,12 +427,64 @@ class ScheduleApp(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
+        # Подключаем обработчик кликов по ячейкам
+        self.table.cellClicked.connect(self.toggle_cell_block)
+
+    def toggle_cell_block(self, row, column):
+        """Переключает состояние ячейки (заблокирована/разблокирована)"""
+        if column < 2:  # Не блокируем столбцы с днями и временем
+            return
+
+        day, time_num = self.get_day_and_time_from_row(row)
+        if day is None:
+            return
+
+        group = groups[column - 2]
+        cell_key = (day, time_num, group)
+
+        if cell_key in self.blocked_cells:
+            self.blocked_cells.remove(cell_key)
+            self.table.item(row, column).setBackground(Qt.white)
+        else:
+            self.blocked_cells.add(cell_key)
+            self.table.item(row, column).setBackground(QColor(220, 220, 220))  # Светло-серый
+
+    def get_day_and_time_from_row(self, row):
+        """Возвращает день и номер слота для строки таблицы"""
+        # Определяем день
+        day_row = 0
+        current_day = None
+        for day in DAYS:
+            if row < day_row + len(TIME_SLOTS):
+                current_day = day
+                break
+            day_row += len(TIME_SLOTS)
+        else:
+            return None, None
+
+        # Определяем временной слот
+        time_num = (row - day_row) % len(TIME_SLOTS) + 1
+        return current_day, time_num
+
+    def clear_blocked_cells(self):
+        """Очищает все блокировки"""
+        self.blocked_cells.clear()
+        for row in range(self.table.rowCount()):
+            for col in range(2, self.table.columnCount()):
+                if self.table.item(row, col):
+                    self.table.item(row, col).setBackground(Qt.white)
+
     def generate_schedule(self):
         self.generate_btn.setEnabled(False)
         QApplication.processEvents()
 
         try:
-            self.current_schedule = genetic_algorithm()
+            # Преобразуем заблокированные ячейки в формат для алгоритма
+            blocked_slots = {
+                (day, time_num, group)
+                for day, time_num, group in self.blocked_cells
+            }
+            self.current_schedule = genetic_algorithm(blocked_slots)
             self.display_schedule()
             QMessageBox.information(self, "Успех", "Расписание успешно сгенерировано!")
         except Exception as e:
@@ -344,6 +493,7 @@ class ScheduleApp(QMainWindow):
             self.generate_btn.setEnabled(True)
 
     def display_schedule(self):
+        """Отображает сгенерированное расписание с учетом блокировок"""
         # Словарь для хранения данных: day -> time_num -> group -> subject
         schedule_data = {
             day: defaultdict(lambda: defaultdict(str))
@@ -356,31 +506,21 @@ class ScheduleApp(QMainWindow):
             time_num = int(time_num)
             schedule_data[day][time_num][group] = f"{teacher}: {subject}"
 
-        # Настраиваем таблицу
-        total_rows = len(TIME_SLOTS) * len(DAYS)
-        self.table.setRowCount(total_rows)
-        self.table.setColumnCount(len(groups) + 2)
-
+        # Отображаем данные в таблице
         row = 0
         for day in DAYS:
-            # Записываем день только в первой строке для этого дня
-            day_written = False
-
             for time_num in sorted(TIME_SLOTS.keys()):
-                if not day_written:
-                    # Создаем item для дня и устанавливаем row span
-                    day_item = QTableWidgetItem(day)
-                    self.table.setItem(row, 0, day_item)
-                    self.table.setSpan(row, 0, 7, 1)  # Объединяем 7 строк
-                    day_written = True
-
-                self.table.setItem(row, 1, QTableWidgetItem(TIME_SLOTS[time_num]))
-
+                # Заполняем ячейки групп
                 for col, group in enumerate(groups, 2):
-                    self.table.setItem(
-                        row, col,
-                        QTableWidgetItem(schedule_data[day][time_num].get(group, "---"))
-                    )
+                    item_text = schedule_data[day][time_num].get(group, "")
+                    item = QTableWidgetItem(item_text)
+
+                    # Проверяем, заблокирована ли ячейка
+                    if (day, time_num, group) in self.blocked_cells:
+                        item.setBackground(QColor(220, 220, 220))  # Светло-серый
+
+                    self.table.setItem(row, col, item)
+
                 row += 1
 
     def save_to_excel(self):
