@@ -1,4 +1,5 @@
 import random
+import connect
 from tabulate import tabulate # для красивого отображения таблицы в консоли
 from collections import defaultdict #для подсчета задания и выдачи расписани (для новых ключей)
 from typing import List, Dict, Tuple, Set #для типов данных
@@ -8,6 +9,13 @@ POPULATION_SIZE = 500 #>повышает разнообразитие решен
 GENERATIONS = 1000 #макс число поколений >шанс найти гут решение
 ELITISM_RATE = 0.2 #отбирает 20 процентов лучших расписаний элита
 SURVIVAL_RATE = 0.8 #от остальных 80 берется лучшее и поллучаем также 250 расписаний
+
+conn = connect.Connect().start_postgres()
+cur = conn.cursor()
+
+sql_zapros = cur.execute('твой sql запрос')
+
+
 
 # Data structures, типы групп, определение типо в gene and shedule
 Group = str
@@ -20,7 +28,7 @@ Schedule = List[Gene]
 # Наши базы данных
 groups = ["ИУ10-11", "ИУ10-12", "ИУ10-13", "ИУ10-14", "ИУ10-15"]
 subjects = ["интегралы", "япы", "физика", "джава", "физра"]
-teachers = ["Иван", "Кирилл", "Варя", "Оля", "Коля"]  # Добавили Колю
+teachers = ["Иван", "Кирилл", "Варя", "Оля", "Коля"]
 lesson_slots = ["1", "2", "3", "4", "5", "6"]
 
 # Связь групп с предметами

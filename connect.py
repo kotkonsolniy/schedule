@@ -8,15 +8,15 @@ CREATE TABLE IF NOT EXISTS teachers (
 );
 """
 
-a = """
-    id_subjects PRIMARY
-    CONSTRAINT teacher_subject
-        FOREIGN KEY (id)
-            REFERENCES subjects(id)
-    CONSTRAINT teacher_time
-        FOREIGN KEY (id)
-            REFERENCES times(id);
-"""
+# a = """
+#     id_subjects PRIMARY
+#     CONSTRAINT teacher_subject
+#         FOREIGN KEY (id)
+#             REFERENCES subjects(id)
+#     CONSTRAINT teacher_time
+#         FOREIGN KEY (id)
+#             REFERENCES times(id);
+# """
 
 CREATE_GROUPS_TABLE = """
 CREATE TABLE IF NOT EXISTS groups (
@@ -24,56 +24,53 @@ CREATE TABLE IF NOT EXISTS groups (
     name VARCHAR(255) NOT NULL
 );
 """
-b = """
-    CONSTRAINT group_subject
-        FOREIGN KEY (id)
-            REFERENCES subjects(id);
+# b = """
+#     CONSTRAINT group_subject
+#         FOREIGN KEY (id)
+#             REFERENCES subjects(id);
+# """
+
+
+CREATE_SUBJECTS_TABLE = """
+CREATE TABLE IF NOT EXISTS subjects (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL
+);
 """
 
-
-# CREATE_SUBJECTS_TABLE = """
-# CREATE TABLE IF NOT EXISTS subjects (
-#     id SERIAL PRIMARY KEY,
-#     name VARCHAR(255) NOT NULL
-#     CONSTRAINT subject_classroom
-#         FOREIGN KEY(id)
-#             REFERENCES classrooms(id);
-# );
-# """
-#
-# CREATE_TIMES_TABLE = """
-# CREATE TABLE IF NOT EXISTS times (
-#     id SERIAL PRIMARY KEY,
-#     name TIMESTAMP NOT NULL
-# );
-# """
-#
-# CREATE_CLASSROOMS_TABLE = """
-# CREATE TABLE IF NOT EXISTS classroom (
-#     id SERIAL PRIMARY KEY,
-#     name VARCHAR(255) NOT NULL
-# );
-# """
-
-CREATE_DEPEND = """
-ALTER TABLE teachers
-ADD CONSTRAINT teacher_subject
-FOREIGN KEY (id)
-REFERENCES subjects(id)
-ADD CONSTRAINT teacher_time
-FOREIGN KEY (id)
-REFERENCES times(id)
-
-ALTER TABLE groups
-ADD CONSTRAINT group_subject
-FOREIGN KEY (id)
-REFERENCES subjects(id)
-
-ALTER TABLE subjects
-ADD CONSTRAINT subject_classroom
-FOREIGN KEY(id)
-REFERENCES classrooms(id);
+CREATE_TIMES_TABLE = """
+CREATE TABLE IF NOT EXISTS times (
+    id SERIAL PRIMARY KEY,
+    name TIMESTAMP NOT NULL
+);
 """
+
+CREATE_CLASSROOMS_TABLE = """
+CREATE TABLE IF NOT EXISTS classroom (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL
+);
+"""
+
+# CREATE_DEPEND = """
+# ALTER TABLE teachers
+# ADD CONSTRAINT teacher_subject
+# FOREIGN KEY (id)
+# REFERENCES subjects(id)
+# ADD CONSTRAINT teacher_time
+# FOREIGN KEY (id)
+# REFERENCES times(id)
+#
+# ALTER TABLE groups
+# ADD CONSTRAINT group_subject
+# FOREIGN KEY (id)
+# REFERENCES subjects(id)
+#
+# ALTER TABLE subjects
+# ADD CONSTRAINT subject_classroom
+# FOREIGN KEY(id)
+# REFERENCES classrooms(id);
+#"""
 class Connect:
     POSTGRES_DB = config('POSTGRES_DB')
     POSTGRES_USER = config('POSTGRES_USER')
@@ -95,15 +92,17 @@ class Connect:
             try:
                 cur.execute(CREATE_TEACHERS_TABLE)
                 cur.execute(CREATE_GROUPS_TABLE)
-                # cur.execute(CREATE_SUBJECTS_TABLE)
-                # cur.execute(CREATE_TIMES_TABLE)
-                # cur.execute(CREATE_CLASSROOMS_TABLE)
+                cur.execute(CREATE_SUBJECTS_TABLE)
+                cur.execute(CREATE_TIMES_TABLE)
+                cur.execute(CREATE_CLASSROOMS_TABLE)
                 print("Таблицы успешно созданы или уже существуют.\nЗависимости установлены")
                 conn.commit()
                 cur.close()
                 conn.close()
+                return conn
             except Exception as e:
                 print(f'Ошибка при создании таблиц {e}')
+                return False
         except psycopg2 as e:
             print(f'Ошибка подключения: {e}')
             return False
@@ -112,7 +111,7 @@ class Connect:
 def main():
     conn = Connect()
     conn.start_postgres()
-    print("Connect")
+    # print("Connect")
 
 if __name__ == '__main__':
     main()
