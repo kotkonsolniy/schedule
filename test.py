@@ -1,414 +1,628 @@
 import random
 from collections import defaultdict
 from typing import List, Dict, Tuple, Set
-from tabulate import tabulate
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
+    QPushButton, QVBoxLayout, QWidget, QMessageBox, QFileDialog,
+    QProgressBar
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
+import xlwt
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Constants
-POPULATION_SIZE = 250
-GENERATIONS = 250
-ELITISM_RATE = 0.2
-SURVIVAL_RATE = 0.8
-MUTATION_RATE = 0.1
-
-# Data types
+# Типы данных
 Group = str
 Subject = str
 Teacher = str
-Classroom = str
 LessonSlot = str
-Day = str
-Gene = List  # [Teacher, LessonSlot, Group, Subject, Classroom, Day]
+Gene = List  # [Teacher, LessonSlot, Group, Subject]
 Schedule = List[Gene]
 
-# Sample data
-groups = ["ИУ10-11", "ИУ10-12", "ИУ10-13", "ИУ10-14", "ИУ10-15"]
-subjects = ["интегралы", "япы", "физика", "джава", "физра"]
-teachers = ["Иван", "Кирилл", "Варя", "Оля", "Коля"]
-days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
-lesson_slots = ["1", "2", "3", "4", "5", "6"]
+# Константы
+POPULATION_SIZE = 500
+GENERATIONS = 1000
+ELITISM_RATE = 0.2
+SURVIVAL_RATE = 0.8
+MAX_LESSONS_PER_DAY = 6
+DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
+NUM_THREADS = 4  # Количество потоков для параллельных вычислений
 
-# Classrooms with their features
-classrooms = {
-    "А-101": {"seats": 30, "projector": True, "computers_win": 10, "acoustics": True},
-    "А-202": {"seats": 25, "projector": False, "computers_linux": 15, "soldering": True},
-    "Б-103": {"seats": 50, "projector": True, "sound_system": True, "emsc": True},
-    "Г-304": {"seats": 20, "projector": True, "computers_win": 20, "spectrum_analysis": True},
-    "Д-105": {"seats": 40, "projector": True, "acoustics": True, "tempest": True}
+# Временные слоты с реальным временем
+TIME_SLOTS = {
+    1: "8:30 - 10:00",
+    2: "10:10 - 11:40",
+    3: "11:50 - 13:20",
+    4: "14:05 - 15:35",
+    5: "15:55 - 17:25",
+    6: "17:35 - 19:05",
+    7: "19:15 - 20:45"
 }
 
-# Subject requirements for classrooms
-subject_classroom_requirements = {
-    "физика": {"projector": True, "seats": 25},
-    "джава": {"computers_win": True, "seats": 20},
-    "япы": {"computers_linux": True, "seats": 15},
-    "физра": {"sound_system": True, "seats": 30},
-    "интегралы": {"projector": True, "seats": 20}
-}
+LESSON_SLOTS = [f"{day}-{n}" for day in DAYS for n in range(1, 8)]  # 7 пар в день для 6 дней
 
-# Group-subject requirements
+# Тестовые данные
+groups = ["ИУ10-11", "ИУ10-12", "ИУ10-13", "ИУ10-14", "ИУ10-15", "ИУ10-16", "ИУ10-17", "ИУ10-18", "ИУ10-19"]
+subjects = [
+    "интегралы", "языки программирования", "физика", "джава", "физра",
+    "Дискретная математика", "Введение в специальность", "ОРГ", "СПО",
+    "Основы РБПО", "Матан", "Ангем", "информатика"
+]
+
+teachers = [
+    "Андрей А", "Кирилл Александрович", "Наталья Андреевна", "Кририлл Дмитриевич", "Валентин Александрович",
+    "Варвара Александровна", "Егор Алексеевич", "Константин Андреевич",
+    "Юлия Викторовна"
+]
+
 group_subject_requirements = {
-    ("ИУ10-11", "интегралы"): 3,
-    ("ИУ10-11", "физика"): 1,
-    ("ИУ10-12", "интегралы"): 1,
-    ("ИУ10-12", "япы"): 1,
-    ("ИУ10-13", "джава"): 2,
-    ("ИУ10-14", "япы"): 2,
+    # ИУ10-11
+    ("ИУ10-11", "интегралы"): 4,
+    ("ИУ10-11", "физика"): 2,
+    ("ИУ10-11", "физра"): 2,
+    ("ИУ10-11", "Дискретная математика"): 3,
+    ("ИУ10-11", "Матан"): 3,
+    ("ИУ10-11", "Ангем"): 2,
+
+    # ИУ10-12
+    ("ИУ10-12", "интегралы"): 3,
+    ("ИУ10-12", "языки программирования"): 3,
+    ("ИУ10-12", "Дискретная математика"): 3,
+    ("ИУ10-12", "информатика"): 2,
+    ("ИУ10-12", "ОРГ"): 2,
+
+    # ИУ10-13
+    ("ИУ10-13", "джава"): 3,
+    ("ИУ10-13", "Введение в специальность"): 2,
+    ("ИУ10-13", "СПО"): 3,
+    ("ИУ10-13", "Основы РБПО"): 2,
+    ("ИУ10-13", "физика"): 2,
+
+    # ИУ10-14
+    ("ИУ10-14", "языки программирования"): 4,
     ("ИУ10-14", "физра"): 3,
-    ("ИУ10-15", "интегралы"): 3
+    ("ИУ10-14", "ОРГ"): 3,
+    ("ИУ10-14", "Информатика"): 2,
+    ("ИУ10-14", "Дискретная математика"): 2,
+
+    # ИУ10-15
+    ("ИУ10-15", "интегралы"): 4,
+    ("ИУ10-15", "СПО"): 3,
+    ("ИУ10-15", "Матан"): 3,
+    ("ИУ10-15", "Ангем"): 2,
+    ("ИУ10-15", "физра"): 2,
+
+    # ИУ10-16
+    ("ИУ10-16", "физика"): 3,
+    ("ИУ10-16", "Основы РБПО"): 2,
+    ("ИУ10-16", "Дискретная математика"): 2,
+    ("ИУ10-16", "языки программирования"): 2,
+
+    # ИУ10-17
+    ("ИУ10-17", "джава"): 4,
+    ("ИУ10-17", "Матан"): 4,
+    ("ИУ10-17", "информатика"): 2,
+    ("ИУ10-17", "ОРГ"): 2,
+
+    # ИУ10-18
+    ("ИУ10-18", "физра"): 2,
+    ("ИУ10-18", "Ангем"): 3,
+    ("ИУ10-18", "Введение в специальность"): 2,
+    ("ИУ10-18", "СПО"): 2,
+
+    # ИУ10-19
+    ("ИУ10-19", "языки программирования"): 4,
+    ("ИУ10-19", "информатика"): 3,
+    ("ИУ10-19", "Дискретная математика"): 2,
+    ("ИУ10-19", "Основы РБПО"): 2
 }
 
-# Teacher-subject assignments
 teacher_subjects = {
-    "Иван": ["интегралы", "физика"],
-    "Кирилл": ["джава"],
-    "Варя": ["физра"],
-    "Коля": ["япы"],
+    "Андрей А": ["СПО", "Информатика"],
+    "Кирилл Александрович": ["Языки программирования", "Джава"],
+    "Наталья Андреевна": ["Джава"],
+    "Кирилл Дмитриевич": ["Языки программирования"],
+    "Валлентин Александрович": ["ЯПНУ"],
+    "Варвара Александровна": ["Дискретная математика", "Введение в специальность"],
+    "Егор Алексеевич": ["Информатика", "Основы РБПО"],
+    "Константин Андреевич": ["Языки программирования", "СПО"],
+    "Юлия Викторовна": ["Дискретная математика", "ОРГ", ]
+}
+
+lecture_groups = {
+    "лекция_интегралы": ["ИУ10-11", "ИУ10-12", "ИУ10-15"],
+    "лекция_физика": ["ИУ10-11", "ИУ10-13", "ИУ10-16"],
+    "лекция_Дискретная математика": ["ИУ10-11", "ИУ10-12", "ИУ10-13"],
+    "лекция_информатика": ["ИУ10-12", "ИУ10-14", "ИУ10-19"]
 }
 
 
-def generate_random_schedule() -> Schedule:
-    schedule = []
-    for (group, subject), count in group_subject_requirements.items():
-        available_teachers = [t for t, subjs in teacher_subjects.items() if subject in subjs]
-        if not available_teachers:
-            raise ValueError(f"No available teachers for subject {subject}")
+class GeneticAlgorithmWorker(QThread):
+    finished = pyqtSignal(object)
+    progress = pyqtSignal(int)
+    message = pyqtSignal(str)
 
-        # Filter classrooms that meet subject requirements
-        reqs = subject_classroom_requirements.get(subject, {})
-        available_classrooms = [
-            room for room, features in classrooms.items()
-            if all(features.get(k, 0) >= (v if isinstance(v, int) else 1) for k, v in reqs.items())
-        ]
+    def __init__(self, blocked_slots):
+        super().__init__()
+        self.blocked_slots = blocked_slots
 
-        if not available_classrooms:
-            raise ValueError(f"No suitable classrooms for subject {subject}")
+    def run(self):
+        try:
+            schedule = self.genetic_algorithm(self.blocked_slots)
+            self.finished.emit(schedule)
+        except Exception as e:
+            self.message.emit(f"Ошибка: {str(e)}")
 
-        for _ in range(count):
-            gene = [
-                random.choice(available_teachers),
-                random.choice(lesson_slots),
-                group,
-                subject,
-                random.choice(available_classrooms),
-                random.choice(days)
-            ]
-            schedule.append(gene)
-    return schedule
+    def generate_random_schedule(self, blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+        if blocked_slots is None:
+            blocked_slots = set()
 
+        schedule = []
 
-def calculate_fitness(schedule: Schedule) -> int:
-    if len(schedule) != sum(group_subject_requirements.values()):
-        return -1_000_000
+        # Обычные занятия
+        for (group, subject), count in group_subject_requirements.items():
+            available_teachers = [t for t, subjs in teacher_subjects.items() if subject in subjs]
+            if not available_teachers:
+                continue
 
-    hard_constraints_violations = 0
-    soft_constraints_violations = 0
-
-    # Trackers for constraints
-    teacher_lessons = defaultdict(set)  # {(teacher, day): {slot}}
-    group_lessons = defaultdict(set)  # {(group, day): {slot}}
-    classroom_lessons = defaultdict(set)  # {(classroom, day): {slot}}
-    teacher_days = defaultdict(set)  # {teacher: {days}}
-    group_days = defaultdict(set)  # {group: {days}}
-    subject_counts = defaultdict(int)  # {(group, subject): count}
-    teacher_work_days = defaultdict(int)  # {teacher: days_count}
-    group_work_days = defaultdict(int)  # {group: days_count}
-
-    for teacher, slot, group, subject, classroom, day in schedule:
-        # Hard constraints
-        # 1. Teacher can teach this subject
-        if subject not in teacher_subjects[teacher]:
-            hard_constraints_violations += 1
-
-        # 2. Teacher isn't double-booked
-        if (teacher, day, slot) in teacher_lessons:
-            hard_constraints_violations += 1
-        teacher_lessons[(teacher, day)].add(slot)
-
-        # 3. Group isn't double-booked
-        if (group, day, slot) in group_lessons:
-            hard_constraints_violations += 1
-        group_lessons[(group, day)].add(slot)
-
-        # 4. Classroom isn't double-booked
-        if (classroom, day, slot) in classroom_lessons:
-            hard_constraints_violations += 1
-        classroom_lessons[(classroom, day)].add(slot)
-
-        # 5. Classroom meets requirements
-        reqs = subject_classroom_requirements.get(subject, {})
-        room_features = classrooms[classroom]
-        if not all(room_features.get(k, 0) >= (v if isinstance(v, int) else 1) for k, v in reqs.items()):
-            hard_constraints_violations += 1
-
-        # 6. Subject requirements are met
-        subject_counts[(group, subject)] += 1
-
-        # Track days for teachers and groups
-        teacher_days[teacher].add(day)
-        group_days[group].add(day)
-
-    # Check subject requirements
-    for (group, subject), required in group_subject_requirements.items():
-        actual = subject_counts.get((group, subject), 0)
-        hard_constraints_violations += abs(required - actual)
-
-    # Check no extra subjects
-    for (group, subject), actual in subject_counts.items():
-        if (group, subject) not in group_subject_requirements:
-            hard_constraints_violations += actual
-
-    # Soft constraints
-    # 1. No more than 6 lessons per day for group
-    for (group, day), slots in group_lessons.items():
-        if len(slots) > 6:
-            soft_constraints_violations += 1
-
-    # 2. No more than 1 window per day for group
-    for (group, day), slots in group_lessons.items():
-        slots_sorted = sorted(int(s) for s in slots)
-        windows = 0
-        for i in range(1, len(slots_sorted)):
-            if slots_sorted[i] - slots_sorted[i - 1] > 1:
-                windows += 1
-        if windows > 1:
-            soft_constraints_violations += 1
-
-    # 3. No window before or after lunch (assuming lunch is after 3rd slot)
-    for (group, day), slots in group_lessons.items():
-        slots_int = [int(s) for s in slots]
-        if 3 in slots_int:
-            if (2 in slots_int and 4 not in slots_int) or (4 in slots_int and 2 not in slots_int):
-                soft_constraints_violations += 1
-
-    # 4. Teacher's lessons are compact (same day)
-    for teacher, days_set in teacher_days.items():
-        if len(days_set) > 1:
-            # Penalize for each extra day
-            soft_constraints_violations += len(days_set) - 1
-
-    # 5. Minimize transitions between buildings (first letter of classroom)
-    building_transitions = 0
-    for group in groups:
-        group_classes = [g for g in schedule if g[2] == group]
-        buildings = [c[4][0] for c in group_classes]  # First letter of classroom
-        for i in range(1, len(buildings)):
-            if buildings[i] != buildings[i - 1]:
-                building_transitions += 1
-
-    soft_constraints_violations += building_transitions * 0.5  # Smaller penalty
-
-    # 6. Optimal use of weekends (prefer weekdays)
-    weekend_classes = sum(1 for gene in schedule if gene[5] == "Сб")
-    soft_constraints_violations += weekend_classes * 0.2
-
-    # Calculate total fitness
-    if hard_constraints_violations > 0:
-        return -1_000_000 - hard_constraints_violations * 10_000
-
-    return 1_000_000 - soft_constraints_violations * 100
-
-
-def crossover(parent1: Schedule, parent2: Schedule) -> Schedule:
-    child = []
-    for gene in parent1:
-        teacher, lesson_slot, group, subject, classroom, day = gene
-
-        # Check if gene is conflict-free in parent1
-        teacher_conflict = sum(1 for t, l, g, s, c, d in parent1
-                               if t == teacher and d == day and l == lesson_slot) != 1
-        group_conflict = sum(1 for t, l, g, s, c, d in parent1
-                             if g == group and d == day and l == lesson_slot) != 1
-        classroom_conflict = sum(1 for t, l, g, s, c, d in parent1
-                                 if c == classroom and d == day and l == lesson_slot) != 1
-
-        if not teacher_conflict and not group_conflict and not classroom_conflict:
-            child.append(gene)
-        else:
-            # Try to find better gene from parent2
-            alternatives = [g for g in parent2
-                            if g[2] == group and g[3] == subject]
-
-            # Filter conflict-free alternatives
-            valid_alternatives = []
-            for alt in alternatives:
-                alt_teacher, alt_lesson, alt_group, alt_subject, alt_classroom, alt_day = alt
-                teacher_ok = sum(1 for t, l, g, s, c, d in child
-                                 if t == alt_teacher and d == alt_day and l == alt_lesson) == 0
-                group_ok = sum(1 for t, l, g, s, c, d in child
-                               if g == alt_group and d == alt_day and l == alt_lesson) == 0
-                classroom_ok = sum(1 for t, l, g, s, c, d in child
-                                   if c == alt_classroom and d == alt_day and l == alt_lesson) == 0
-
-                if teacher_ok and group_ok and classroom_ok:
-                    valid_alternatives.append(alt)
-
-            if valid_alternatives:
-                child.append(random.choice(valid_alternatives))
-            else:
-                child.append(random.choice(alternatives))
-
-    return child
-
-
-def mutate(schedule: Schedule) -> Schedule:
-    idx = random.randint(0, len(schedule) - 1)
-    teacher, lesson_slot, group, subject, classroom, day = schedule[idx]
-
-    # Check if gene is already conflict-free
-    teacher_conflict = sum(1 for t, l, g, s, c, d in schedule
-                           if t == teacher and d == day and l == lesson_slot) != 1
-    group_conflict = sum(1 for t, l, g, s, c, d in schedule
-                         if g == group and d == day and l == lesson_slot) != 1
-    classroom_conflict = sum(1 for t, l, g, s, c, d in schedule
-                             if c == classroom and d == day and l == lesson_slot) != 1
-
-    if not teacher_conflict and not group_conflict and not classroom_conflict:
-        if random.random() < 0.3:  # Small chance to mutate anyway
-            mutation_type = random.random()
-            if mutation_type < 0.3:
-                # Mutate classroom
-                reqs = subject_classroom_requirements.get(subject, {})
-                available_classrooms = [
-                    room for room, features in classrooms.items()
-                    if all(features.get(k, 0) >= (v if isinstance(v, int) else 1)
-                           for k, v in reqs.items())
+            for _ in range(count):
+                available_slots = [
+                    slot for slot in LESSON_SLOTS
+                    if not is_cell_blocked(
+                        slot.split('-')[0],
+                        int(slot.split('-')[1]),
+                        group,
+                        blocked_slots
+                    )
                 ]
-                if available_classrooms:
-                    schedule[idx][4] = random.choice(available_classrooms)
-                elif mutation_type < 0.6:
-                # Mutate day
-                    schedule[idx][5] = random.choice(days)
-                else:
-                # Mutate slot
-                    schedule[idx][1] = random.choice(lesson_slots)
+                if not available_slots:
+                    continue
+
+                gene = [
+                    random.choice(available_teachers),
+                    random.choice(available_slots),
+                    group,
+                    subject
+                ]
+                schedule.append(gene)
+
+        # Лекции для нескольких групп
+        for lecture, groups_list in lecture_groups.items():
+            subject = lecture.split('_')[1]
+            available_teachers = [t for t, subjs in teacher_subjects.items() if subject in subjs]
+            if not available_teachers:
+                continue
+
+            available_lecture_slots = [
+                slot for slot in LESSON_SLOTS
+                if all(
+                    not is_cell_blocked(
+                        slot.split('-')[0],
+                        int(slot.split('-')[1]),
+                        group,
+                        blocked_slots
+                    )
+                    for group in groups_list
+                )
+            ]
+
+            if not available_lecture_slots:
+                continue
+
+            slot = random.choice(available_lecture_slots)
+            teacher = random.choice(available_teachers)
+
+            for group in groups_list:
+                gene = [
+                    teacher,
+                    slot,
+                    group,
+                    f"лекция_{subject}"
+                ]
+                schedule.append(gene)
+
         return schedule
 
-    # Mutation options
-    mutation_type = random.random()
+    def calculate_fitness(self, schedule: Schedule, blocked_slots: Set[Tuple[str, int, str]] = None) -> int:
+        if blocked_slots is None:
+            blocked_slots = set()
 
-    if mutation_type < 0.4:  # Mutate classroom
-        reqs = subject_classroom_requirements.get(subject, {})
-        available_classrooms = [
-            room for room, features in classrooms.items()
-            if all(features.get(k, 0) >= (v if isinstance(v, int) else 1)
-                   for k, v in reqs.items())
-        ]
-        if available_classrooms:
-            schedule[idx][4] = random.choice(available_classrooms)
+        if len(schedule) < sum(group_subject_requirements.values()):
+            return -1_000_000
 
-    elif mutation_type < 0.7:  # Mutate day
-        schedule[idx][5] = random.choice(days)
+        hard_constraints_violations = 0
+        teacher_lessons = defaultdict(set)
+        group_lessons = defaultdict(set)
+        subject_counts = defaultdict(int)
+        day_lessons = defaultdict(lambda: defaultdict(int))
+        windows_per_group = defaultdict(int)
 
-    else:  # Mutate lesson slot
-        # Get available slots where group has no lesson that day
-        group_day_lessons = {l for t, l, g, s, c, d in schedule
-                             if g == group and d == day}
-        available_slots = [l for l in lesson_slots if l not in group_day_lessons]
+        for teacher, lesson_slot, group, subject in schedule:
+            day, slot_num = lesson_slot.split('-')
+            slot_num = int(slot_num)
 
-        if available_slots:
-            schedule[idx][1] = random.choice(available_slots)
-        else:
-            schedule[idx][1] = random.choice(lesson_slots)
+            if is_cell_blocked(day, slot_num, group, blocked_slots):
+                hard_constraints_violations += 10
 
-    return schedule
+            if subject.replace("лекция_", "") not in teacher_subjects.get(teacher, []):
+                hard_constraints_violations += 1
 
+            if lesson_slot in teacher_lessons[teacher]:
+                hard_constraints_violations += 1
+            teacher_lessons[teacher].add(lesson_slot)
 
-def select_parent(ranked_population: List[Tuple[int, Schedule]]) -> Schedule:
-    total_fitness = sum(max(fit, 0) for fit, ind in ranked_population)
-    if total_fitness == 0:
-        return random.choice(ranked_population)[1]
+            if lesson_slot in group_lessons[group]:
+                hard_constraints_violations += 1
+            group_lessons[group].add(lesson_slot)
 
-    pick = random.uniform(0, total_fitness)
-    current = 0
-    for fit, ind in ranked_population:
-        current += max(fit, 0)
-        if current > pick:
-            return ind
-    return ranked_population[0][1]
+            day_lessons[day][group] += 1
 
+            if day_lessons[day][group] > MAX_LESSONS_PER_DAY:
+                hard_constraints_violations += 1
 
-def visualize_schedule(schedule: Schedule):
-    """Display the schedule in a readable table format."""
-    day_schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+            slots = sorted([int(s.split('-')[1]) for s in group_lessons[group] if s.startswith(day)])
+            for i in range(1, len(slots)):
+                if slots[i] - slots[i - 1] > 1:
+                    windows_per_group[group] += 1
 
-    for teacher, slot, group, subject, classroom, day in schedule:
-        entry = f"{teacher}: {subject} ({classroom})"
-        day_schedule[day][slot][group].append(entry)
+            subject_counts[(group, subject)] += 1
 
-    # Prepare table data for each day
-    for day in days:
-        print(f"\n{day}:")
-        time_schedule = day_schedule[day]
-        if not time_schedule:
-            print("  No classes scheduled")
-            continue
+        for (group, subject), required in group_subject_requirements.items():
+            actual = subject_counts.get((group, subject), 0)
+            hard_constraints_violations += abs(required - actual)
 
-        table = []
-        headers = ["Time"] + groups
+        hard_constraints_violations += sum(windows_per_group.values())
 
-        for slot in sorted(time_schedule.keys(), key=int):
-            row = [slot]
-            for group in groups:
-                lessons = time_schedule[slot].get(group, [])
-                if len(lessons) > 1:
-                    row.append("CONFLICT!\n" + "\n".join(lessons))
-                elif lessons:
-                    row.append("\n".join(lessons))
+        return 1_000_000 - hard_constraints_violations * 10_000
+
+    def calculate_fitness_parallel(self, population, blocked_slots):
+        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+            futures = {executor.submit(self.calculate_fitness, ind, blocked_slots): idx
+                       for idx, ind in enumerate(population)}
+
+            results = [0] * len(population)
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+
+            return results
+
+    def crossover(self, parent1: Schedule, parent2: Schedule) -> Schedule:
+        child = []
+        parent2_genes = parent2.copy()
+
+        for gene in parent1:
+            teacher, lesson_slot, group, subject = gene
+
+            teacher_conflict = sum(1 for t, ls, g, s in parent1
+                                   if t == teacher and ls == lesson_slot) != 1
+            group_conflict = sum(1 for t, ls, g, s in parent1
+                                 if g == group and ls == lesson_slot) != 1
+
+            if not teacher_conflict and not group_conflict:
+                child.append(gene)
+            else:
+                alternatives = [g for g in parent2_genes
+                                if g[2] == group and g[3] == subject]
+
+                valid_alternatives = []
+                for alt in alternatives:
+                    alt_teacher, alt_lesson, alt_group, alt_subject = alt
+                    teacher_ok = sum(1 for t, l, g, s in child
+                                     if t == alt_teacher and l == alt_lesson) == 0
+                    group_ok = sum(1 for t, l, g, s in child
+                                   if g == alt_group and l == alt_lesson) == 0
+                    if teacher_ok and group_ok:
+                        valid_alternatives.append(alt)
+
+                if valid_alternatives:
+                    chosen = random.choice(valid_alternatives)
+                    child.append(chosen)
+                    if chosen in parent2_genes:
+                        parent2_genes.remove(chosen)
+                elif alternatives:
+                    child.append(random.choice(alternatives))
                 else:
-                    row.append("---")
-            table.append(row)
+                    child.append(gene)
 
-        print(tabulate(table, headers=headers, tablefmt="grid", stralign="left"))
+        return child
 
-    print("\nNotes:")
-    print("- CONFLICT! means multiple lessons at the same time")
-    print("- --- means no lesson scheduled")
-    print(f"Fitness score: {calculate_fitness(schedule)}")
-    print("-----------------")
+    def mutate(self, schedule: Schedule, blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+        if blocked_slots is None:
+            blocked_slots = set()
+
+        if not schedule:
+            return schedule
+
+        idx = random.randint(0, len(schedule) - 1)
+        teacher, lesson_slot, group, subject = schedule[idx]
+
+        teacher_conflict = sum(1 for t, ls, g, s in schedule
+                               if t == teacher and ls == lesson_slot) != 1
+        group_conflict = sum(1 for t, ls, g, s in schedule
+                             if g == group and ls == lesson_slot) != 1
+
+        if not teacher_conflict and not group_conflict and random.random() < 0.7:
+            return schedule
+
+        mutation_type = random.random()
+
+        if mutation_type < 0.4:
+            available_teachers = [t for t, subjs in teacher_subjects.items()
+                                  if subject.replace("лекция_", "") in subjs]
+            if available_teachers:
+                schedule[idx][0] = random.choice(available_teachers)
+
+        elif mutation_type < 0.8:
+            current_day = lesson_slot.split('-')[0]
+            available_slots = [ls for ls in LESSON_SLOTS
+                               if ls.split('-')[0] == current_day and
+                               not any(g[2] == group and g[1] == ls
+                                       for g in schedule if g != schedule[idx]) and
+                               not is_cell_blocked(
+                                   ls.split('-')[0],
+                                   int(ls.split('-')[1]),
+                                   group,
+                                   blocked_slots
+                               )]
+            if available_slots:
+                schedule[idx][1] = random.choice(available_slots)
+            else:
+                available_slots = [ls for ls in LESSON_SLOTS
+                                   if not any(g[2] == group and g[1] == ls
+                                              for g in schedule if g != schedule[idx]) and
+                                   not is_cell_blocked(
+                                       ls.split('-')[0],
+                                       int(ls.split('-')[1]),
+                                       group,
+                                       blocked_slots
+                                   )]
+                if available_slots:
+                    schedule[idx][1] = random.choice(available_slots)
+
+        return schedule
+
+    def select_parent(self, ranked_population: List[Tuple[int, Schedule]]) -> Schedule:
+        total_fitness = sum(max(fit, 0) for fit, ind in ranked_population)
+        if total_fitness == 0:
+            return random.choice(ranked_population)[1]
+
+        pick = random.uniform(0, total_fitness)
+        current = 0
+        for fit, ind in ranked_population:
+            current += max(fit, 0)
+            if current > pick:
+                return ind
+        return ranked_population[0][1]
+
+    def genetic_algorithm(self, blocked_slots: Set[Tuple[str, int, str]] = None) -> Schedule:
+        if blocked_slots is None:
+            blocked_slots = set()
+
+        population = [self.generate_random_schedule(blocked_slots) for _ in range(POPULATION_SIZE)]
+
+        for generation in range(GENERATIONS):
+            # Параллельное вычисление fitness
+            fitness_scores = self.calculate_fitness_parallel(population, blocked_slots)
+            ranked = sorted(zip(fitness_scores, population), key=lambda x: x[0], reverse=True)
+
+            elite = ranked[:int(POPULATION_SIZE * ELITISM_RATE)]
+            survivors = ranked[:int(POPULATION_SIZE * SURVIVAL_RATE)]
+
+            best_fitness, best_schedule = ranked[0]
+            self.message.emit(f"Generation {generation}, Best Fitness: {best_fitness}")
+            self.progress.emit(int(generation / GENERATIONS * 100))
+
+            if best_fitness >= 900_000:
+                self.message.emit(f"Good solution found in generation {generation}")
+                return best_schedule
+
+            new_generation = [ind for (fit, ind) in elite]
+
+            while len(new_generation) < POPULATION_SIZE:
+                parent1 = self.select_parent(survivors)
+                parent2 = self.select_parent(survivors)
+                child = self.crossover(parent1, parent2)
+
+                if random.random() < 0.1:
+                    child = self.mutate(child, blocked_slots)
+
+                new_generation.append(child)
+
+            population = new_generation
+
+        return max(population, key=lambda x: self.calculate_fitness(x, blocked_slots))
 
 
-def genetic_algorithm() -> Schedule:
-    population = [generate_random_schedule() for _ in range(POPULATION_SIZE)]
+def is_cell_blocked(day: str, time_num: int, group: str, blocked_slots: Set[Tuple[str, int, str]]) -> bool:
+    """Проверяет, заблокирована ли ячейка"""
+    return (day, time_num, group) in blocked_slots
 
-    for generation in range(GENERATIONS):
-        ranked = sorted([(calculate_fitness(ind), ind)
-                         for ind in population], reverse=True)
 
-        elite = ranked[:int(POPULATION_SIZE * ELITISM_RATE)]
-        survivors = ranked[:int(POPULATION_SIZE * SURVIVAL_RATE)]
+class ScheduleApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Генератор расписания университета")
+        self.setGeometry(100, 100, 1200, 800)
+        self.current_schedule = []
+        self.blocked_cells = set()
+        self.init_ui()
 
-        best_fitness, best_schedule = max(ranked, key=lambda x: x[0])
-        print(f"Generation {generation}, Best Fitness: {best_fitness}")
+    def init_ui(self):
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(groups) + 2)
+        self.table.setHorizontalHeaderLabels(["День", "Время"] + groups)
 
-        if generation % 50 == 0:  # Show progress every 50 generations
-            visualize_schedule(best_schedule)
+        total_rows = len(DAYS) * len(TIME_SLOTS)
+        self.table.setRowCount(total_rows)
 
-        if best_fitness == 1_000_000:
-            print(f"Perfect solution found in generation {generation}")
-            return best_schedule
+        row = 0
+        for day in DAYS:
+            day_item = QTableWidgetItem(day)
+            self.table.setItem(row, 0, day_item)
+            self.table.setSpan(row, 0, len(TIME_SLOTS), 1)
 
-        new_generation = [ind for (fit, ind) in elite]
+            for time_num, time_text in TIME_SLOTS.items():
+                time_item = QTableWidgetItem(time_text)
+                self.table.setItem(row, 1, time_item)
 
-        while len(new_generation) < POPULATION_SIZE:
-            parent1 = select_parent(survivors)
-            parent2 = select_parent(survivors)
-            child = crossover(parent1, parent2)
+                for col in range(2, self.table.columnCount()):
+                    item = QTableWidgetItem("")
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.table.setItem(row, col, item)
 
-            if random.random() < MUTATION_RATE:
-                child = mutate(child)
+                row += 1
 
-            new_generation.append(child)
+        btn_layout = QVBoxLayout()
+        self.generate_btn = QPushButton("Сгенерировать расписание")
+        self.generate_btn.clicked.connect(self.generate_schedule)
+        btn_layout.addWidget(self.generate_btn)
 
-        population = new_generation
+        self.save_btn = QPushButton("Сохранить в Excel")
+        self.save_btn.clicked.connect(self.save_to_excel)
+        btn_layout.addWidget(self.save_btn)
 
-    return max(population, key=calculate_fitness)
+        self.clear_blocks_btn = QPushButton("Очистить блокировки")
+        self.clear_blocks_btn.clicked.connect(self.clear_blocked_cells)
+        btn_layout.addWidget(self.clear_blocks_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        btn_layout.addWidget(self.progress_bar)
+
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.table)
+        main_layout.addLayout(btn_layout)
+
+        container = QWidget()
+        container.setLayout(main_layout)
+        self.setCentralWidget(container)
+
+        self.table.cellClicked.connect(self.toggle_cell_block)
+
+    def toggle_cell_block(self, row, column):
+        if column < 2:
+            return
+
+        day, time_num = self.get_day_and_time_from_row(row)
+        if day is None:
+            return
+
+        group = groups[column - 2]
+        cell_key = (day, time_num, group)
+
+        if cell_key in self.blocked_cells:
+            self.blocked_cells.remove(cell_key)
+            self.table.item(row, column).setBackground(Qt.white)
+        else:
+            self.blocked_cells.add(cell_key)
+            self.table.item(row, column).setBackground(QColor(220, 220, 220))
+
+    def get_day_and_time_from_row(self, row):
+        day_row = 0
+        current_day = None
+        for day in DAYS:
+            if row < day_row + len(TIME_SLOTS):
+                current_day = day
+                break
+            day_row += len(TIME_SLOTS)
+        else:
+            return None, None
+
+        time_num = (row - day_row) % len(TIME_SLOTS) + 1
+        return current_day, time_num
+
+    def clear_blocked_cells(self):
+        self.blocked_cells.clear()
+        for row in range(self.table.rowCount()):
+            for col in range(2, self.table.columnCount()):
+                if self.table.item(row, col):
+                    self.table.item(row, col).setBackground(Qt.white)
+
+    def generate_schedule(self):
+        self.generate_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        self.worker = GeneticAlgorithmWorker(self.blocked_cells)
+        self.worker.finished.connect(self.on_generation_finished)
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.message.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
+        self.worker.start()
+
+    def on_generation_finished(self, schedule):
+        self.current_schedule = schedule
+        self.display_schedule()
+        self.generate_btn.setEnabled(True)
+        QMessageBox.information(self, "Успех", "Расписание успешно сгенерировано!")
+
+    def display_schedule(self):
+        schedule_data = {
+            day: defaultdict(lambda: defaultdict(str))
+            for day in DAYS
+        }
+
+        for teacher, lesson_slot, group, subject in self.current_schedule:
+            day, time_num = lesson_slot.split('-')
+            time_num = int(time_num)
+            schedule_data[day][time_num][group] = f"{teacher}: {subject}"
+
+        row = 0
+        for day in DAYS:
+            for time_num in sorted(TIME_SLOTS.keys()):
+                for col, group in enumerate(groups, 2):
+                    item_text = schedule_data[day][time_num].get(group, "")
+                    item = QTableWidgetItem(item_text)
+
+                    if (day, time_num, group) in self.blocked_cells:
+                        item.setBackground(QColor(220, 220, 220))
+
+                    self.table.setItem(row, col, item)
+
+                row += 1
+
+    def save_to_excel(self):
+        if not self.current_schedule:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для сохранения")
+            return
+
+        try:
+            options = QFileDialog.Options()
+            file_name, _ = QFileDialog.getSaveFileName(
+                self, "Сохранить файл Excel", "", "Excel Files (*.xls)", options=options
+            )
+            if not file_name:
+                return
+
+            workbook = xlwt.Workbook()
+
+            for day in DAYS:
+                sheet = workbook.add_sheet(day)
+                headers = ["Время"] + groups
+                for col, header in enumerate(headers):
+                    sheet.write(0, col, header)
+
+                day_data = defaultdict(lambda: defaultdict(str))
+                for teacher, lesson_slot, group, subject in self.current_schedule:
+                    current_day, time_num = lesson_slot.split('-')
+                    if current_day == day:
+                        time_num = int(time_num)
+                        day_data[time_num][group] = f"{teacher}: {subject}"
+
+                for time_num in sorted(TIME_SLOTS.keys()):
+                    row = time_num
+                    sheet.write(row, 0, TIME_SLOTS[time_num])
+                    for col, group in enumerate(groups, 1):
+                        sheet.write(row, col, day_data[time_num].get(group, "---"))
+
+            workbook.save(file_name)
+            QMessageBox.information(self, "Успех", f"Расписание сохранено в {file_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {str(e)}")
 
 
 if __name__ == "__main__":
-    try:
-        best_schedule = genetic_algorithm()
-        print("\nFinal best schedule:")
-        visualize_schedule(best_schedule)
-    except ValueError as e:
-        print(f"Error: {e}")
-        print("Please check your input data - make sure all subjects have at least one teacher assigned.")
+    app = QApplication(sys.argv)
+    window = ScheduleApp()
+    window.show()
+    sys.exit(app.exec_())
