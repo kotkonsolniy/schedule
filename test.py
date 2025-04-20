@@ -21,8 +21,8 @@ Gene = List  # [Teacher, LessonSlot, Group, Subject]
 Schedule = List[Gene]
 
 # Константы
-POPULATION_SIZE = 500
-GENERATIONS = 1000
+POPULATION_SIZE = 1000  # Увеличено для лучшего поиска
+GENERATIONS = 2000  # Увеличено для лучшей сходимости
 ELITISM_RATE = 0.2
 SURVIVAL_RATE = 0.8
 MAX_LESSONS_PER_DAY = 6
@@ -160,13 +160,14 @@ class GeneticAlgorithmWorker(QThread):
 
         schedule = []
 
-        # Обычные занятия
+        # Сначала создаем все обязательные пары
         for (group, subject), count in group_subject_requirements.items():
             available_teachers = [t for t, subjs in teacher_subjects.items() if subject in subjs]
             if not available_teachers:
-                continue
+                continue  # Нет доступных преподавателей - это будет наказано в фитнес-функции
 
             for _ in range(count):
+                # Собираем все доступные слоты для этой группы
                 available_slots = [
                     slot for slot in LESSON_SLOTS
                     if not is_cell_blocked(
@@ -175,52 +176,71 @@ class GeneticAlgorithmWorker(QThread):
                         group,
                         blocked_slots
                     )
+                       and not any(
+                        g[1] == slot and g[2] == group
+                        for g in schedule
+                    )
                 ]
-                if not available_slots:
-                    continue
 
-                gene = [
-                    random.choice(available_teachers),
-                    random.choice(available_slots),
-                    group,
-                    subject
-                ]
+                if not available_slots:
+                    # Если нет доступных слотов, все равно добавляем пару (это будет наказано в фитнес-функции)
+                    gene = [
+                        random.choice(available_teachers),
+                        random.choice(LESSON_SLOTS),  # Берем любой слот, даже если он занят
+                        group,
+                        subject
+                    ]
+                else:
+                    # Выбираем случайный доступный слот
+                    gene = [
+                        random.choice(available_teachers),
+                        random.choice(available_slots),
+                        group,
+                        subject
+                    ]
+
                 schedule.append(gene)
 
-        # Лекции для нескольких групп
+        # Затем добавляем лекции
         for lecture, groups_list in lecture_groups.items():
             subject = lecture.split('_')[1]
             available_teachers = [t for t, subjs in teacher_subjects.items() if subject in subjs]
             if not available_teachers:
                 continue
 
-            available_lecture_slots = [
-                slot for slot in LESSON_SLOTS
+            # Ищем слот, где все группы свободны
+            available_lecture_slots = []
+            for slot in LESSON_SLOTS:
+                day, time_num = slot.split('-')
+                time_num = int(time_num)
+
+                # Проверяем, что слот не заблокирован для всех групп
                 if all(
-                    not is_cell_blocked(
-                        slot.split('-')[0],
-                        int(slot.split('-')[1]),
+                        not is_cell_blocked(day, time_num, group, blocked_slots)
+                        for group in groups_list
+                ):
+                    # Проверяем, что слот свободен для всех групп
+                    if all(
+                            not any(
+                                g[1] == slot and g[2] == group
+                                for g in schedule
+                            )
+                            for group in groups_list
+                    ):
+                        available_lecture_slots.append(slot)
+
+            if available_lecture_slots:
+                slot = random.choice(available_lecture_slots)
+                teacher = random.choice(available_teachers)
+
+                for group in groups_list:
+                    gene = [
+                        teacher,
+                        slot,
                         group,
-                        blocked_slots
-                    )
-                    for group in groups_list
-                )
-            ]
-
-            if not available_lecture_slots:
-                continue
-
-            slot = random.choice(available_lecture_slots)
-            teacher = random.choice(available_teachers)
-
-            for group in groups_list:
-                gene = [
-                    teacher,
-                    slot,
-                    group,
-                    f"лекция_{subject}"
-                ]
-                schedule.append(gene)
+                        f"лекция_{subject}"
+                    ]
+                    schedule.append(gene)
 
         return schedule
 
@@ -228,13 +248,24 @@ class GeneticAlgorithmWorker(QThread):
         if blocked_slots is None:
             blocked_slots = set()
 
-        if len(schedule) < sum(group_subject_requirements.values()):
-            return -1_000_000
+        # Штраф за недостаточное количество пар
+        subject_counts = defaultdict(int)
+        for teacher, lesson_slot, group, subject in schedule:
+            subject_counts[(group, subject)] += 1
 
+        requirement_penalty = 0
+        for (group, subject), required in group_subject_requirements.items():
+            actual = subject_counts.get((group, subject), 0)
+            # Увеличиваем штраф за нехватку пар
+            if actual < required:
+                requirement_penalty += (required - actual) * 1_000_000  # Очень большой штраф
+            elif actual > required:
+                requirement_penalty += (actual - required) * 100_000  # Большой штраф за избыток
+
+        # Остальные штрафы
         hard_constraints_violations = 0
         teacher_lessons = defaultdict(set)
         group_lessons = defaultdict(set)
-        subject_counts = defaultdict(int)
         day_lessons = defaultdict(lambda: defaultdict(int))
         windows_per_group = defaultdict(int)
 
@@ -243,38 +274,33 @@ class GeneticAlgorithmWorker(QThread):
             slot_num = int(slot_num)
 
             if is_cell_blocked(day, slot_num, group, blocked_slots):
-                hard_constraints_violations += 10
+                hard_constraints_violations += 10_000
 
             if subject.replace("лекция_", "") not in teacher_subjects.get(teacher, []):
-                hard_constraints_violations += 1
+                hard_constraints_violations += 10_000
 
             if lesson_slot in teacher_lessons[teacher]:
-                hard_constraints_violations += 1
+                hard_constraints_violations += 10_000
             teacher_lessons[teacher].add(lesson_slot)
 
             if lesson_slot in group_lessons[group]:
-                hard_constraints_violations += 1
+                hard_constraints_violations += 10_000
             group_lessons[group].add(lesson_slot)
 
             day_lessons[day][group] += 1
-
             if day_lessons[day][group] > MAX_LESSONS_PER_DAY:
-                hard_constraints_violations += 1
+                hard_constraints_violations += 10_000
 
+            # Штраф за "окна" в расписании
             slots = sorted([int(s.split('-')[1]) for s in group_lessons[group] if s.startswith(day)])
             for i in range(1, len(slots)):
                 if slots[i] - slots[i - 1] > 1:
                     windows_per_group[group] += 1
 
-            subject_counts[(group, subject)] += 1
+        hard_constraints_violations += sum(windows_per_group.values()) * 100
 
-        for (group, subject), required in group_subject_requirements.items():
-            actual = subject_counts.get((group, subject), 0)
-            hard_constraints_violations += abs(required - actual)
-
-        hard_constraints_violations += sum(windows_per_group.values())
-
-        return 1_000_000 - hard_constraints_violations * 10_000
+        # Общий фитнес - чем больше, тем лучше
+        return 10_000_000 - requirement_penalty - hard_constraints_violations
 
     def calculate_fitness_parallel(self, population, blocked_slots):
         with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
@@ -290,41 +316,35 @@ class GeneticAlgorithmWorker(QThread):
 
     def crossover(self, parent1: Schedule, parent2: Schedule) -> Schedule:
         child = []
-        parent2_genes = parent2.copy()
 
-        for gene in parent1:
-            teacher, lesson_slot, group, subject = gene
+        # Сначала собираем все обязательные пары из обоих родителей
+        required_genes = defaultdict(list)
+        for gene in parent1 + parent2:
+            group, subject = gene[2], gene[3]
+            if (group, subject) in group_subject_requirements:
+                required_genes[(group, subject)].append(gene)
 
-            teacher_conflict = sum(1 for t, ls, g, s in parent1
-                                   if t == teacher and ls == lesson_slot) != 1
-            group_conflict = sum(1 for t, ls, g, s in parent1
-                                 if g == group and ls == lesson_slot) != 1
-
-            if not teacher_conflict and not group_conflict:
-                child.append(gene)
+        # Добавляем в ребенка нужное количество пар для каждого предмета
+        for (group, subject), required in group_subject_requirements.items():
+            genes = required_genes.get((group, subject), [])
+            if len(genes) >= required:
+                # Берем нужное количество случайных генов из доступных
+                selected = random.sample(genes, required)
             else:
-                alternatives = [g for g in parent2_genes
-                                if g[2] == group and g[3] == subject]
+                # Если не хватает, берем все что есть и дополняем случайными
+                selected = genes.copy()
+                while len(selected) < required:
+                    # Создаем новые гены для недостающих пар
+                    teacher = random.choice([t for t, subjs in teacher_subjects.items() if subject in subjs])
+                    slot = random.choice(LESSON_SLOTS)
+                    selected.append([teacher, slot, group, subject])
 
-                valid_alternatives = []
-                for alt in alternatives:
-                    alt_teacher, alt_lesson, alt_group, alt_subject = alt
-                    teacher_ok = sum(1 for t, l, g, s in child
-                                     if t == alt_teacher and l == alt_lesson) == 0
-                    group_ok = sum(1 for t, l, g, s in child
-                                   if g == alt_group and l == alt_lesson) == 0
-                    if teacher_ok and group_ok:
-                        valid_alternatives.append(alt)
+            child.extend(selected)
 
-                if valid_alternatives:
-                    chosen = random.choice(valid_alternatives)
-                    child.append(chosen)
-                    if chosen in parent2_genes:
-                        parent2_genes.remove(chosen)
-                elif alternatives:
-                    child.append(random.choice(alternatives))
-                else:
-                    child.append(gene)
+        # Добавляем лекции
+        lecture_genes = [gene for gene in parent1 + parent2
+                         if gene[3].startswith("лекция_")]
+        child.extend(lecture_genes)
 
         return child
 
@@ -335,26 +355,23 @@ class GeneticAlgorithmWorker(QThread):
         if not schedule:
             return schedule
 
+        # Мутируем случайный ген
         idx = random.randint(0, len(schedule) - 1)
         teacher, lesson_slot, group, subject = schedule[idx]
 
-        teacher_conflict = sum(1 for t, ls, g, s in schedule
-                               if t == teacher and ls == lesson_slot) != 1
-        group_conflict = sum(1 for t, ls, g, s in schedule
-                             if g == group and ls == lesson_slot) != 1
-
-        if not teacher_conflict and not group_conflict and random.random() < 0.7:
+        # Не мутируем лекции, чтобы не нарушить их синхронность
+        if subject.startswith("лекция_"):
             return schedule
 
         mutation_type = random.random()
 
-        if mutation_type < 0.4:
+        if mutation_type < 0.4:  # Мутация преподавателя
             available_teachers = [t for t, subjs in teacher_subjects.items()
                                   if subject.replace("лекция_", "") in subjs]
             if available_teachers:
                 schedule[idx][0] = random.choice(available_teachers)
 
-        elif mutation_type < 0.8:
+        elif mutation_type < 0.8:  # Мутация временного слота
             current_day = lesson_slot.split('-')[0]
             available_slots = [ls for ls in LESSON_SLOTS
                                if ls.split('-')[0] == current_day and
@@ -414,7 +431,7 @@ class GeneticAlgorithmWorker(QThread):
             self.message.emit(f"Generation {generation}, Best Fitness: {best_fitness}")
             self.progress.emit(int(generation / GENERATIONS * 100))
 
-            if best_fitness >= 900_000:
+            if best_fitness >= 9_900_000:  # Почти идеальное решение
                 self.message.emit(f"Good solution found in generation {generation}")
                 return best_schedule
 
